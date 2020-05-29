@@ -1,3 +1,20 @@
+let isAlreadyCalling = false;
+let getCalled = false;
+const existingCalls = [];
+const { RTCPeerConnection, RTCSessionDescription } = window;
+const peerConnection = new RTCPeerConnection();
+//https://tsh.io/blog/how-to-write-video-chat-app-using-webrtc-and-nodejs/
+
+function unselectUsersFromList() {
+  const alreadySelectedUser = document.querySelectorAll(
+    ".active-user.active-user--selected"
+  );
+
+  alreadySelectedUser.forEach((el) => {
+    el.setAttribute("class", "active-user");
+  });
+}
+
 function updateUserList(socketIds) {
   const activeUserContainer = document.getElementById("active-user-container");
 
@@ -33,20 +50,15 @@ function createUserItemContainer(socketId) {
   return userContainerEl;
 }
 
-const { RTCPeerConnection, RTCSessionDescription } = window;
+async function callUser(socketId) {
+  const offer = await peerConnection.createOffer();
+  await peerConnection.setLocalDescription(new RTCSessionDescription(offer));
 
-navigator.getUserMedia(
-  { video: true, audio: true },
-  (stream) => {
-    const localVideo = document.getElementById("local-video");
-    if (localVideo) {
-      localVideo.srcObject = stream;
-    }
-  },
-  (error) => {
-    console.log(error);
-  }
-);
+  socket.emit("call-user", {
+    offer,
+    to: socketId,
+  });
+}
 
 // importScripts
 const socket = io.connect("http://localhost:5000");
@@ -63,6 +75,73 @@ socket.on("remove-user", ({ socketId }) => {
     elToRemove.remove();
   }
 });
+
+socket.on("call-made", async (data) => {
+  if (getCalled) {
+    const confirmed = confirm(
+      `User "Socket: ${data.socket}" wants to call you. Do accept this call?`
+    );
+
+    if (!confirmed) {
+      socket.emit("reject-call", {
+        from: data.socket,
+      });
+
+      return;
+    }
+  }
+
+  await peerConnection.setRemoteDescription(
+    new RTCSessionDescription(data.offer)
+  );
+  const answer = await peerConnection.createAnswer();
+  await peerConnection.setLocalDescription(new RTCSessionDescription(answer));
+
+  socket.emit("make-answer", {
+    answer,
+    to: data.socket,
+  });
+  getCalled = true;
+});
+
+socket.on("answer-made", async (data) => {
+  await peerConnection.setRemoteDescription(
+    new RTCSessionDescription(data.answer)
+  );
+
+  if (!isAlreadyCalling) {
+    callUser(data.socket);
+    isAlreadyCalling = true;
+  }
+});
+
+socket.on("call-rejected", (data) => {
+  alert(`User: "Socket: ${data.socket}" rejected your call.`);
+  unselectUsersFromList();
+});
+
+peerConnection.ontrack = function ({ streams: [stream] }) {
+  const remoteVideo = document.getElementById("remote-video");
+  if (remoteVideo) {
+    remoteVideo.srcObject = stream;
+  }
+};
+
+navigator.getUserMedia(
+  { video: true, audio: true },
+  (stream) => {
+    const localVideo = document.getElementById("local-video");
+    if (localVideo) {
+      localVideo.srcObject = stream;
+    }
+    stream
+      .getTracks()
+      .forEach((track) => peerConnection.addTrack(track, stream));
+  },
+  (error) => {
+    console.log(error);
+  }
+);
 
 // this.io.connection("connection", (socket) => {
 //   const existingSocket = this.activeSockets.find(
